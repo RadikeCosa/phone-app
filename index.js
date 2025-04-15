@@ -1,93 +1,151 @@
+require("dotenv").config();
 const express = require("express");
 const morgan = require("morgan");
 const cors = require("cors");
+const mongoose = require("mongoose");
+const Person = require("./models/personModel");
+
 const app = express();
+
+// Middleware
 app.use(cors());
-app.use(express.static("dist"));
 app.use(express.json());
+app.use(express.static("dist"));
 app.use(express.urlencoded({ extended: true }));
-morgan.token("body", (req) => {
-  return JSON.stringify(req.body);
-});
+
+// Configuración de morgan
+morgan.token("body", (req) => JSON.stringify(req.body));
 app.use(morgan(":method :url :status :response-time ms - body: :body"));
-let persons = [
-  {
-    id: 1,
-    name: "Chiqui",
-    number: "040-123456",
-  },
-  {
-    id: 2,
-    name: "Ada Lovelace",
-    number: "39-44-5323523",
-  },
-  {
-    id: 3,
-    name: "Dan Abramov",
-    number: "12-43-234345",
-  },
-  {
-    id: 4,
-    name: "Mary Poppendieck",
-    number: "39-23-6423122",
-  },
-];
 
-app.get("/", (request, response) => {
-  response.send("<h1> Bienvenidos a la Agenda</h1>");
-});
+// Conexión a MongoDB
+const url = process.env.MONGODB_URI;
+mongoose
+  .connect(url)
+  .then(() => {
+    console.log("Conectado a MongoDB");
+  })
+  .catch((error) => {
+    console.log("Error de conexión:", error.message);
+  });
 
-app.get("/api/persons", (request, response) => {
-  response.json(persons);
-});
-
-app.get("/info", (request, response) => {
-  const date = new Date();
-  const info = `La agenda tiene ${persons.length} personas. <br> ${date}`;
-  response.send("<h3>" + info + "</h3>");
-});
-
-app.get("/api/persons/:id", (request, response) => {
-  const id = Number(request.params.id);
-  const person = persons.find((person) => person.id === id);
-  if (person) {
-    response.json(person);
-  } else {
-    response.status(404).end();
+// Rutas
+app.get("/info", async (request, response, next) => {
+  try {
+    const date = new Date().toString();
+    const count = await Person.countDocuments({});
+    response.send(`<p>La agenda tiene ${count} personas</p><p>${date}</p>`);
+  } catch (error) {
+    next(error);
   }
 });
 
-app.delete("/api/persons/:id", (request, response) => {
-  const id = Number(request.params.id);
-  persons = persons.filter((person) => person.id !== id);
-  response.status(204).end();
+app.get("/api/persons", async (request, response, next) => {
+  try {
+    const persons = await Person.find({});
+    response.json(persons);
+  } catch (error) {
+    next(error);
+  }
 });
 
-const generateId = () => {
-  return Math.floor(Math.random() * 100000) + 1;
-};
-app.post("/api/persons", (request, response) => {
-  const body = request.body;
-  if (!body.name) {
-    return response.status(400).json({ error: "no pusiste nombre loco" });
+app.get("/api/persons/:id", async (request, response, next) => {
+  try {
+    const person = await Person.findById(request.params.id);
+    if (person) {
+      response.json(person);
+    } else {
+      response.status(404).json({ error: "Persona no encontrada" });
+    }
+  } catch (error) {
+    next(error);
   }
-  if (!body.number) {
-    return response.status(400).json({ error: "loco, no pusiste numero!!!" });
+});
+
+app.delete("/api/persons/:id", async (request, response, next) => {
+  try {
+    const result = await Person.findByIdAndDelete(request.params.id);
+    if (result) {
+      response.status(204).end();
+    } else {
+      response.status(404).json({ error: "Persona no encontrada" });
+    }
+  } catch (error) {
+    next(error);
   }
-  if (persons.find((person) => person.name === body.name)) {
+});
+
+app.post("/api/persons", async (request, response, next) => {
+  try {
+    const body = request.body;
+
+    if (!body.name) {
+      return response.status(400).json({ error: "no pusiste nombre loco" });
+    }
+    if (!body.number) {
+      return response.status(400).json({ error: "loco, no pusiste numero!!!" });
+    }
+
+    const person = new Person({
+      name: body.name,
+      number: body.number,
+    });
+
+    const savedPerson = await person.save();
+    response.json(savedPerson);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.put("/api/persons/:id", async (request, response, next) => {
+  try {
+    const body = request.body;
+
+    if (!body.number) {
+      return response.status(400).json({ error: "loco, no pusiste numero!!!" });
+    }
+
+    const updatedData = {
+      name: body.name || undefined,
+      number: body.number,
+    };
+
+    const person = await Person.findByIdAndUpdate(
+      request.params.id,
+      { $set: updatedData },
+      { new: true, runValidators: true, context: "query" }
+    );
+
+    if (person) {
+      response.json(person);
+    } else {
+      response.status(404).json({ error: "Persona no encontrada" });
+    }
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Middleware de errores
+app.use((error, request, response, next) => {
+  console.error(error.message);
+
+  if (error.name === "CastError") {
+    return response.status(400).json({ error: "ID inválido" });
+  }
+  if (error.name === "ValidationError") {
+    return response.status(400).json({ error: error.message });
+  }
+  if (error.code === 11000) {
     return response
       .status(400)
       .json({ error: "ya agendaste a ese chabon loco!!!" });
   }
-  const person = {
-    id: generateId(),
-    name: body.name,
-    number: body.number,
-  };
-  persons = persons.concat(person);
-  response.json(person);
+
+  response.status(500).json({ error: "Error interno del servidor" });
 });
 
+// Iniciar servidor
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
